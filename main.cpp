@@ -1,14 +1,29 @@
 #include <iostream>
 #include <string>
-#include <cstdlib>
-#include <fstream>
 #include <vector>
+#include <fstream>
+#include <filesystem>
+#include <sstream>
+#include <algorithm>
+#include <cstdlib>
+#include <cstdio>
+#include <memory>
+#include <stdexcept>
+#include <array>
+#include <regex>
+#include <map>
+#include <set>
+#include <chrono>
+#include <thread>
 #include <locale>
 #include <codecvt>
-#include <Windows.h>
-#include <filesystem>
-#include <algorithm>
-#include <sstream> // Для std::wstringstream
+#include <functional>
+#include <iomanip>
+#include <windows.h>
+#include <shobjidl.h>
+#include <shlobj.h>
+#include <commdlg.h>
+#include <objbase.h>
 
 // Класс для управления GitHub репозиториями
 class GitHubManager {
@@ -247,6 +262,142 @@ public:
         }
     }
 
+    // Функция для выбора файлов через стандартный диалог Windows
+    std::vector<std::wstring> openFileDialog(const std::wstring& initialDir, bool multiSelect = true) {
+        std::vector<std::wstring> selectedFiles;
+        
+        // Инициализация COM
+        HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        if (SUCCEEDED(hr)) {
+            IFileOpenDialog* pFileOpen;
+            
+            // Создаем экземпляр диалога выбора файлов
+            hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, 
+                                 IID_IFileOpenDialog, reinterpret_cast<void**>(&pFileOpen));
+            
+            if (SUCCEEDED(hr)) {
+                // Настраиваем диалог
+                if (multiSelect) {
+                    DWORD dwOptions;
+                    pFileOpen->GetOptions(&dwOptions);
+                    pFileOpen->SetOptions(dwOptions | FOS_ALLOWMULTISELECT);
+                }
+                
+                // Устанавливаем начальную директорию, если она указана
+                if (!initialDir.empty()) {
+                    IShellItem* pItem;
+                    hr = SHCreateItemFromParsingName(initialDir.c_str(), NULL, IID_IShellItem, 
+                                                   reinterpret_cast<void**>(&pItem));
+                    if (SUCCEEDED(hr)) {
+                        pFileOpen->SetFolder(pItem);
+                        pItem->Release();
+                    }
+                }
+                
+                // Показываем диалог
+                hr = pFileOpen->Show(NULL);
+                
+                if (SUCCEEDED(hr)) {
+                    if (multiSelect) {
+                        // Получаем выбранные файлы
+                        IShellItemArray* pItemArray;
+                        hr = pFileOpen->GetResults(&pItemArray);
+                        
+                        if (SUCCEEDED(hr)) {
+                            DWORD count;
+                            pItemArray->GetCount(&count);
+                            
+                            for (DWORD i = 0; i < count; i++) {
+                                IShellItem* pItem;
+                                hr = pItemArray->GetItemAt(i, &pItem);
+                                
+                                if (SUCCEEDED(hr)) {
+                                    PWSTR pszFilePath;
+                                    hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath);
+                                    
+                                    if (SUCCEEDED(hr)) {
+                                        selectedFiles.push_back(pszFilePath);
+                                        CoTaskMemFree(pszFilePath);
+                                    }
+                                    pItem->Release();
+                                }
+                            }
+                            pItemArray->Release();
+                        }
+                    } else {
+                        // Получаем выбранный файл
+                        IShellItem* pItem;
+                        hr = pFileOpen->GetResult(&pItem);
+                        
+                        if (SUCCEEDED(hr)) {
+                            PWSTR pszFilePath;
+                            hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath);
+                            
+                            if (SUCCEEDED(hr)) {
+                                selectedFiles.push_back(pszFilePath);
+                                CoTaskMemFree(pszFilePath);
+                            }
+                            pItem->Release();
+                        }
+                    }
+                }
+                pFileOpen->Release();
+            }
+            CoUninitialize();
+        }
+        
+        return selectedFiles;
+    }
+    
+    // Функция для выбора директории через стандартный диалог Windows
+    std::wstring openFolderDialog(const std::wstring& title = L"Выберите директорию") {
+        std::wstring selectedFolder;
+        
+        // Инициализация COM
+        HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        if (SUCCEEDED(hr)) {
+            IFileOpenDialog* pFileOpen;
+            
+            // Создаем экземпляр диалога выбора файлов
+            hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, 
+                                 IID_IFileOpenDialog, reinterpret_cast<void**>(&pFileOpen));
+            
+            if (SUCCEEDED(hr)) {
+                // Настраиваем диалог для выбора папок
+                DWORD dwOptions;
+                pFileOpen->GetOptions(&dwOptions);
+                pFileOpen->SetOptions(dwOptions | FOS_PICKFOLDERS);
+                
+                // Устанавливаем заголовок
+                pFileOpen->SetTitle(title.c_str());
+                
+                // Показываем диалог
+                hr = pFileOpen->Show(NULL);
+                
+                if (SUCCEEDED(hr)) {
+                    // Получаем выбранную папку
+                    IShellItem* pItem;
+                    hr = pFileOpen->GetResult(&pItem);
+                    
+                    if (SUCCEEDED(hr)) {
+                        PWSTR pszFolderPath;
+                        hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFolderPath);
+                        
+                        if (SUCCEEDED(hr)) {
+                            selectedFolder = pszFolderPath;
+                            CoTaskMemFree(pszFolderPath);
+                        }
+                        pItem->Release();
+                    }
+                }
+                pFileOpen->Release();
+            }
+            CoUninitialize();
+        }
+        
+        return selectedFolder;
+    }
+
     // Создать полный проект (репозиторий + локальный проект)
     void createFullProject() {
         if (!isAuthenticated && !authenticate()) return;
@@ -295,25 +446,20 @@ public:
         
         std::string visibility = (choice == 1) ? "--private" : "--public";
         
-        // Запрашиваем локальную директорию для проекта
-        std::wstring localPath;
-        std::wcout << L"Введите путь для создания локального проекта (или 'home' для отмены): ";
-        std::getline(std::wcin, localPath);
+        // Запрашиваем локальную директорию для проекта через диалог выбора папки
+        std::wcout << L"Выберите директорию для создания локального проекта...\n";
+        std::wstring localPath = openFolderDialog(L"Выберите директорию для создания проекта");
         
-        if (checkForHomeCommand(localPath)) {
+        if (localPath.empty()) {
+            std::wcout << L"Директория не выбрана. Отмена операции.\n";
             return;
         }
         
-        std::string localPathStr;
-        if (localPath.empty()) {
-            localPathStr = wstringToString(repoName);
-        } else {
-            localPathStr = wstringToString(localPath);
-            
-            // Если путь не заканчивается на имя репозитория, добавляем его
-            if (localPathStr.find(wstringToString(repoName)) == std::string::npos) {
-                localPathStr += "/" + wstringToString(repoName);
-            }
+        std::string localPathStr = wstringToString(localPath);
+        
+        // Добавляем имя репозитория к пути, если его там нет
+        if (localPathStr.find(wstringToString(repoName)) == std::string::npos) {
+            localPathStr += "\\" + wstringToString(repoName);
         }
         
         // Создаем директорию, если она не существует
@@ -338,7 +484,6 @@ public:
         std::wcout << stringToWstring(result) << L"\n";
         
         // Проверяем успешность создания репозитория
-        // GitHub CLI может возвращать разные форматы ответа
         bool repoCreated = result.find("Created repository") != std::string::npos || 
                           result.find("HTTP 201") != std::string::npos ||
                           result.find("https://github.com/") != std::string::npos;
@@ -358,89 +503,7 @@ public:
         result = executeCommandInDirectory(initCmd, localPathStr);
         std::wcout << stringToWstring(result) << L"\n";
         
-        // Спрашиваем, хочет ли пользователь добавить файлы из другой директории
-        std::wcout << L"Хотите добавить файлы из другой директории? (д/н): ";
-        wchar_t addFiles;
-        std::wcin >> addFiles;
-        std::wcin.ignore();
-        
-        std::vector<std::filesystem::path> selectedFiles;
-        std::string sourceDirStr = "";
-        bool keepStructure = false;
-        
-        if (addFiles == L'д' || addFiles == L'Д') {
-            // Запрашиваем исходную директорию с файлами
-            std::wcout << L"Введите путь к директории с исходными файлами (или 'home' для отмены): ";
-            std::wstring sourceDirPath;
-            std::getline(std::wcin, sourceDirPath);
-            
-            if (checkForHomeCommand(sourceDirPath)) {
-                // Продолжаем без добавления файлов
-            } else {
-                sourceDirStr = wstringToString(sourceDirPath);
-                
-                if (!std::filesystem::exists(sourceDirStr)) {
-                    std::wcout << L"Указанная директория не существует! Продолжаем без добавления файлов.\n";
-                } else {
-                    // Показываем список файлов в директории
-                    std::wcout << L"Файлы в директории " << sourceDirPath << L":\n";
-                    
-                    std::vector<std::filesystem::path> allFiles;
-                    try {
-                        for (const auto& entry : std::filesystem::recursive_directory_iterator(sourceDirStr)) {
-                            if (entry.is_regular_file()) {
-                                allFiles.push_back(entry.path());
-                                std::wcout << allFiles.size() << L". " << entry.path().wstring() << L"\n";
-                            }
-                        }
-                    } catch (const std::exception& e) {
-                        std::wcout << L"Ошибка при чтении директории: " << stringToWstring(e.what()) << L"\n";
-                        // Продолжаем без добавления файлов
-                    }
-                    
-                    if (!allFiles.empty()) {
-                        // Запрашиваем выбор файлов
-                        std::wcout << L"Выберите файлы для добавления (введите номера через запятую, 'all' для всех, или 'home' для отмены): ";
-                        std::wstring selection;
-                        std::getline(std::wcin, selection);
-                        
-                        if (!checkForHomeCommand(selection)) {
-                            if (selection == L"all" || selection == L"ALL" || selection == L"все" || selection == L"ВСЕ") {
-                                selectedFiles = allFiles;
-                            } else {
-                                std::wstringstream ss(selection);
-                                std::wstring item;
-                                
-                                while (std::getline(ss, item, L',')) {
-                                    try {
-                                        int index = std::stoi(item);
-                                        if (index > 0 && index <= static_cast<int>(allFiles.size())) {
-                                            selectedFiles.push_back(allFiles[index - 1]);
-                                        } else {
-                                            std::wcout << L"Игнорирование недопустимого индекса: " << index << L"\n";
-                                        }
-                                    } catch (const std::exception&) {
-                                        std::wcout << L"Игнорирование недопустимого ввода: " << item << L"\n";
-                                    }
-                                }
-                            }
-                            
-                            if (!selectedFiles.empty()) {
-                                // Запрашиваем структуру директорий в репозитории
-                                std::wcout << L"Сохранить структуру директорий? (д/н): ";
-                                wchar_t preserveStructure;
-                                std::wcin >> preserveStructure;
-                                std::wcin.ignore();
-                                
-                                keepStructure = (preserveStructure == L'д' || preserveStructure == L'Д');
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Создаем README.md, если его еще нет
+        // Создаем README.md
         std::string readmePath = localPathStr + "/README.md";
         if (!std::filesystem::exists(readmePath)) {
             std::ofstream readmeFile(readmePath);
@@ -472,41 +535,77 @@ public:
             std::wcout << L"Создан файл README.md\n";
         }
         
-        // Копируем выбранные файлы, если они есть
-        if (!selectedFiles.empty() && !sourceDirStr.empty()) {
-            int copiedCount = 0;
-            for (const auto& src : selectedFiles) {
-                std::filesystem::path relativePath;
+        // Спрашиваем, хочет ли пользователь добавить файлы
+        std::wcout << L"Хотите добавить файлы в проект? (д/н): ";
+        wchar_t addFiles;
+        std::wcin >> addFiles;
+        std::wcin.ignore();
+        
+        std::vector<std::wstring> selectedFilePaths;
+        bool keepStructure = false;
+        
+        if (addFiles == L'д' || addFiles == L'Д') {
+            // Запрашиваем исходную директорию с файлами через диалог
+            std::wcout << L"Выберите директорию с исходными файлами...\n";
+            std::wstring sourceDirPath = openFolderDialog(L"Выберите директорию с исходными файлами");
+            
+            if (sourceDirPath.empty()) {
+                std::wcout << L"Директория не выбрана. Продолжаем без добавления файлов.\n";
+            } else {
+                // Открываем диалог выбора файлов
+                std::wcout << L"Выберите файлы для добавления в проект...\n";
+                selectedFilePaths = openFileDialog(sourceDirPath);
                 
-                if (keepStructure) {
-                    // Получаем относительный путь от исходной директории
-                    relativePath = std::filesystem::relative(src, sourceDirStr);
+                if (selectedFilePaths.empty()) {
+                    std::wcout << L"Файлы не выбраны. Продолжаем без добавления файлов.\n";
                 } else {
-                    // Используем только имя файла
-                    relativePath = src.filename();
-                }
-                
-                // Формируем полный целевой путь
-                std::filesystem::path destPath = localPathStr + "/" + relativePath.string();
-                
-                // Создаем промежуточные директории, если нужно
-                std::filesystem::path destDir = destPath.parent_path();
-                if (!destDir.empty() && !std::filesystem::exists(destDir)) {
-                    std::filesystem::create_directories(destDir);
-                }
-                
-                try {
-                    std::filesystem::copy_file(src, destPath, 
-                                              std::filesystem::copy_options::overwrite_existing);
-                    std::wcout << L"Файл скопирован: " << src.wstring() << L" -> " << destPath.wstring() << L"\n";
-                    copiedCount++;
-                } catch (const std::exception& e) {
-                    std::wcout << L"Ошибка при копировании файла " << src.wstring() << L": " 
-                              << stringToWstring(e.what()) << L"\n";
+                    std::wcout << L"Выбрано " << selectedFilePaths.size() << L" файлов.\n";
+                    
+                    // Запрашиваем структуру директорий в репозитории
+                    std::wcout << L"Сохранить структуру директорий? (д/н): ";
+                    wchar_t preserveStructure;
+                    std::wcin >> preserveStructure;
+                    std::wcin.ignore();
+                    
+                    keepStructure = (preserveStructure == L'д' || preserveStructure == L'Д');
+                    
+                    // Копируем выбранные файлы
+                    int copiedCount = 0;
+                    for (const auto& srcPath : selectedFilePaths) {
+                        std::filesystem::path src(srcPath);
+                        std::filesystem::path relativePath;
+                        
+                        if (keepStructure) {
+                            // Получаем относительный путь от исходной директории
+                            relativePath = std::filesystem::relative(src, sourceDirPath);
+                        } else {
+                            // Используем только имя файла
+                            relativePath = src.filename();
+                        }
+                        
+                        // Формируем полный целевой путь
+                        std::filesystem::path destPath = localPathStr + "/" + relativePath.string();
+                        
+                        // Создаем промежуточные директории, если нужно
+                        std::filesystem::path destDir = destPath.parent_path();
+                        if (!destDir.empty() && !std::filesystem::exists(destDir)) {
+                            std::filesystem::create_directories(destDir);
+                        }
+                        
+                        try {
+                            std::filesystem::copy_file(src, destPath, 
+                                                     std::filesystem::copy_options::overwrite_existing);
+                            std::wcout << L"Файл скопирован: " << src.wstring() << L" -> " << destPath.wstring() << L"\n";
+                            copiedCount++;
+                        } catch (const std::exception& e) {
+                            std::wcout << L"Ошибка при копировании файла " << src.wstring() << L": " 
+                                      << stringToWstring(e.what()) << L"\n";
+                        }
+                    }
+                    
+                    std::wcout << L"Скопировано " << copiedCount << L" из " << selectedFilePaths.size() << L" файлов.\n";
                 }
             }
-            
-            std::wcout << L"Скопировано " << copiedCount << L" из " << selectedFiles.size() << L" файлов.\n";
         }
         
         // Добавляем файлы в Git и создаем коммит
@@ -2506,13 +2605,9 @@ public:
             // Формируем полный целевой путь
             std::filesystem::path destPath;
             if (targetPath.empty()) {
-                destPath = workDir.empty() ? 
-                          relativePath.string() : 
-                          workDir + "/" + relativePath.string();
+                destPath = relativePath.string();
             } else {
-                destPath = workDir.empty() ? 
-                          targetPathStr + "/" + relativePath.string() : 
-                          workDir + "/" + targetPathStr + "/" + relativePath.string();
+                destPath = targetPathStr + "/" + relativePath.string();
             }
             
             // Создаем промежуточные директории, если нужно
