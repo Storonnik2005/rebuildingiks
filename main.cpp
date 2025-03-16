@@ -337,8 +337,17 @@ public:
         std::string result = executeCommand(cmd);
         std::wcout << stringToWstring(result) << L"\n";
         
-        if (result.find("Created repository") == std::string::npos && 
-            result.find("HTTP 201") == std::string::npos) {
+        // Проверяем успешность создания репозитория
+        // GitHub CLI может возвращать разные форматы ответа
+        bool repoCreated = result.find("Created repository") != std::string::npos || 
+                          result.find("HTTP 201") != std::string::npos ||
+                          result.find("https://github.com/") != std::string::npos;
+                          
+        // Если в выводе есть сообщение об ошибке, считаем, что репозиторий не создан
+        bool hasError = result.find("GraphQL:") != std::string::npos && 
+                       result.find("error") != std::string::npos;
+                       
+        if (!repoCreated || hasError) {
             std::wcout << L"Ошибка при создании репозитория на GitHub. Проверьте вывод выше.\n";
             return;
         }
@@ -499,6 +508,7 @@ public:
         // Добавляем файлы в Git и создаем коммит
         std::string addCmd = "git add .";
         result = executeCommandInDirectory(addCmd, localPathStr);
+        std::wcout << L"Файлы добавлены в индекс Git.\n";
         
         std::string commitCmd = "git commit -m \"Initial commit\"";
         result = executeCommandInDirectory(commitCmd, localPathStr);
@@ -547,7 +557,22 @@ public:
         
         std::string result = executeCommand(cmd);
         std::wcout << stringToWstring(result) << L"\n";
-        std::wcout << L"Репозиторий успешно создан!\n";
+        
+        // Проверяем успешность создания репозитория
+        bool repoCreated = result.find("Created repository") != std::string::npos || 
+                          result.find("HTTP 201") != std::string::npos ||
+                          result.find("https://github.com/") != std::string::npos;
+                          
+        // Если в выводе есть сообщение об ошибке, считаем, что репозиторий не создан
+        bool hasError = result.find("GraphQL:") != std::string::npos && 
+                       result.find("error") != std::string::npos;
+                       
+        if (!repoCreated || hasError) {
+            std::wcout << L"Ошибка при создании репозитория на GitHub. Проверьте вывод выше.\n";
+        } else {
+            std::wcout << L"Репозиторий успешно создан!\n";
+            std::wcout << L"Репозиторий доступен по адресу: https://github.com/" << username << L"/" << repoName << L"\n";
+        }
     }
 
     // Инициализировать локальный репозиторий
@@ -590,8 +615,32 @@ public:
 
         std::string cmd = "git remote add origin " + wstringToString(remoteUrl);
         std::string result = executeCommand(cmd);
-
-        std::wcout << L"Локальный репозиторий связан с удаленным!\n";
+        
+        // Проверяем, есть ли ошибки в выводе команды
+        if (result.find("error") != std::string::npos || result.find("fatal") != std::string::npos) {
+            std::wcout << L"Ошибка при связывании репозиториев: " << stringToWstring(result) << L"\n";
+            
+            // Проверяем, существует ли уже remote с именем origin
+            if (result.find("remote origin already exists") != std::string::npos) {
+                std::wcout << L"Remote с именем 'origin' уже существует. Хотите обновить URL? (д/н): ";
+                wchar_t updateChoice;
+                std::wcin >> updateChoice;
+                std::wcin.ignore();
+                
+                if (updateChoice == L'д' || updateChoice == L'Д') {
+                    cmd = "git remote set-url origin " + wstringToString(remoteUrl);
+                    result = executeCommand(cmd);
+                    std::wcout << L"URL удаленного репозитория обновлен!\n";
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        } else {
+            std::wcout << L"Локальный репозиторий связан с удаленным!\n";
+        }
+        
         std::wcout << L"Выполнить первоначальный push? (д/н): ";
         
         wchar_t pushChoice;
@@ -601,6 +650,13 @@ public:
         if (pushChoice == L'д' || pushChoice == L'Д') {
             result = executeCommand("git push -u origin master");
             std::wcout << stringToWstring(result) << L"\n";
+            
+            // Проверяем успешность push
+            if (result.find("error") != std::string::npos || result.find("fatal") != std::string::npos) {
+                std::wcout << L"Ошибка при выполнении push. Проверьте вывод выше.\n";
+            } else {
+                std::wcout << L"Push выполнен успешно!\n";
+            }
         }
     }
 
@@ -1182,48 +1238,186 @@ public:
         std::wcout << L"Введите путь к директории для загрузки: ";
         std::getline(std::wcin, sourcePath);
         
+        if (checkForHomeCommand(sourcePath)) {
+            return;
+        }
+        
         if (!std::filesystem::exists(wstringToString(sourcePath))) {
             std::wcout << L"Указанная директория не существует!\n";
             return;
         }
         
+        // Показываем список файлов в директории
+        std::wcout << L"Файлы в директории " << sourcePath << L":\n";
+        
+        std::vector<std::filesystem::path> allFiles;
+        try {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(wstringToString(sourcePath))) {
+                if (entry.is_regular_file()) {
+                    allFiles.push_back(entry.path());
+                    std::wcout << allFiles.size() << L". " << entry.path().wstring() << L"\n";
+                }
+            }
+        } catch (const std::exception& e) {
+            std::wcout << L"Ошибка при чтении директории: " << stringToWstring(e.what()) << L"\n";
+            return;
+        }
+        
+        if (allFiles.empty()) {
+            std::wcout << L"В указанной директории нет файлов.\n";
+            return;
+        }
+        
+        // Запрашиваем выбор файлов
+        std::wcout << L"Выберите файлы для загрузки (введите номера через запятую, 'all' для всех, или 'home' для отмены): ";
+        std::wstring selection;
+        std::getline(std::wcin, selection);
+        
+        if (checkForHomeCommand(selection)) {
+            return;
+        }
+        
+        std::vector<std::filesystem::path> selectedFiles;
+        
+        if (selection == L"all" || selection == L"ALL" || selection == L"все" || selection == L"ВСЕ") {
+            selectedFiles = allFiles;
+        } else {
+            std::wstringstream ss(selection);
+            std::wstring item;
+            
+            while (std::getline(ss, item, L',')) {
+                try {
+                    int index = std::stoi(item);
+                    if (index > 0 && index <= static_cast<int>(allFiles.size())) {
+                        selectedFiles.push_back(allFiles[index - 1]);
+                    } else {
+                        std::wcout << L"Игнорирование недопустимого индекса: " << index << L"\n";
+                    }
+                } catch (const std::exception&) {
+                    std::wcout << L"Игнорирование недопустимого ввода: " << item << L"\n";
+                }
+            }
+        }
+        
+        if (selectedFiles.empty()) {
+            std::wcout << L"Не выбрано ни одного файла для загрузки.\n";
+            return;
+        }
+        
+        std::wcout << L"Выбрано " << selectedFiles.size() << L" файлов.\n";
+        
+        // Запрашиваем структуру директорий в репозитории
+        std::wcout << L"Сохранить структуру директорий? (д/н): ";
+        wchar_t preserveStructure;
+        std::wcin >> preserveStructure;
+        std::wcin.ignore();
+        
+        bool keepStructure = (preserveStructure == L'д' || preserveStructure == L'Д');
+        
         std::wstring targetPath;
         std::wcout << L"Введите целевой путь в репозитории (пустое значение для корня): ";
         std::getline(std::wcin, targetPath);
+        
+        if (checkForHomeCommand(targetPath)) {
+            return;
+        }
+        
+        std::string targetPathStr = wstringToString(targetPath);
+        
+        // Создаём целевую директорию, если она не существует и путь не пустой
+        if (!targetPath.empty() && !std::filesystem::exists(targetPathStr)) {
+            std::string mkdirCmd = "mkdir \"" + targetPathStr + "\" 2>nul";
+            executeCommand(mkdirCmd);
+            std::wcout << L"Создана директория: " << targetPath << L"\n";
+        }
+        
+        // Копирование файлов
+        int copiedCount = 0;
+        for (const auto& src : selectedFiles) {
+            std::filesystem::path relativePath;
+            
+            if (keepStructure) {
+                // Получаем относительный путь от исходной директории
+                relativePath = std::filesystem::relative(src, wstringToString(sourcePath));
+            } else {
+                // Используем только имя файла
+                relativePath = src.filename();
+            }
+            
+            // Формируем полный целевой путь
+            std::filesystem::path destPath;
+            if (targetPath.empty()) {
+                destPath = relativePath.string();
+            } else {
+                destPath = targetPathStr + "/" + relativePath.string();
+            }
+            
+            // Создаем промежуточные директории, если нужно
+            std::filesystem::path destDir = destPath.parent_path();
+            if (!destDir.empty() && !std::filesystem::exists(destDir)) {
+                std::filesystem::create_directories(destDir);
+            }
+            
+            try {
+                std::filesystem::copy_file(src, destPath, 
+                                          std::filesystem::copy_options::overwrite_existing);
+                std::wcout << L"Файл скопирован: " << src.wstring() << L" -> " << destPath.wstring() << L"\n";
+                copiedCount++;
+            } catch (const std::exception& e) {
+                std::wcout << L"Ошибка при копировании файла " << src.wstring() << L": " 
+                          << stringToWstring(e.what()) << L"\n";
+            }
+        }
+        
+        std::wcout << L"Скопировано " << copiedCount << L" из " << selectedFiles.size() << L" файлов.\n";
+        
+        if (copiedCount == 0) {
+            std::wcout << L"Не удалось скопировать ни одного файла. Операция отменена.\n";
+            return;
+        }
         
         std::wstring commitMessage;
         std::wcout << L"Введите сообщение коммита: ";
         std::getline(std::wcin, commitMessage);
         
+        if (checkForHomeCommand(commitMessage)) {
+            return;
+        }
+        
         if (commitMessage.empty()) {
             commitMessage = L"Загрузка файлов из директории " + sourcePath;
         }
         
-        // Копирование файлов
-        std::string copyCmd;
-        if (targetPath.empty()) {
-            copyCmd = "xcopy \"" + wstringToString(sourcePath) + "\\*\" . /E /Y";
-        } else {
-            // Создаём целевую директорию, если она не существует
-            std::string mkdirCmd = "mkdir \"" + wstringToString(targetPath) + "\" 2>nul";
-            executeCommand(mkdirCmd);
-            
-            copyCmd = "xcopy \"" + wstringToString(sourcePath) + "\\*\" \"" + 
-                      wstringToString(targetPath) + "\" /E /Y";
-        }
-        
-        executeCommand(copyCmd);
-        
         // Добавление файлов в Git
         std::string gitCmd = "git add .";
         executeCommand(gitCmd);
+        std::wcout << L"Файлы добавлены в индекс Git.\n";
         
         // Создание коммита
         gitCmd = "git commit -m \"" + wstringToString(commitMessage) + "\"";
         std::string result = executeCommand(gitCmd);
         
         std::wcout << stringToWstring(result) << L"\n";
-        std::wcout << L"Файлы успешно загружены в репозиторий!\n";
+        
+        // Спрашиваем, хочет ли пользователь отправить изменения на GitHub
+        std::wcout << L"Хотите отправить изменения на GitHub? (д/н): ";
+        wchar_t pushChoice;
+        std::wcin >> pushChoice;
+        std::wcin.ignore();
+        
+        if (pushChoice == L'д' || pushChoice == L'Д') {
+            std::string pushCmd = "git push";
+            result = executeCommand(pushCmd);
+            std::wcout << stringToWstring(result) << L"\n";
+            
+            if (result.find("error") != std::string::npos || result.find("fatal") != std::string::npos) {
+                std::wcout << L"Произошла ошибка при отправке изменений на GitHub.\n";
+            } else {
+                std::wcout << L"Файлы успешно загружены в репозиторий и отправлены на GitHub!\n";
+            }
+        } else {
+            std::wcout << L"Файлы успешно загружены в локальный репозиторий!\n";
+        }
     }
 
     // Создать и переключиться на новую ветку
