@@ -1993,9 +1993,22 @@ public:
         std::string workDir = "";
         
         if (!isGitRepository()) {
-            workDir = requestGitDirectory();
-            if (workDir.empty()) {
-                return; // Пользователь отменил операцию или ввел 'home'
+            // Используем диалог выбора директории вместо ручного ввода
+            std::wcout << L"Текущая директория не является Git репозиторием.\n";
+            std::wcout << L"Выберите директорию с Git репозиторием...\n";
+            std::wstring path = openFolderDialog(L"Выберите директорию с Git репозиторием");
+            
+            if (path.empty()) {
+                std::wcout << L"Выбор директории отменен.\n";
+                return;
+            }
+            
+            workDir = wstringToString(path);
+            
+            // Проверяем, является ли директория Git репозиторием
+            if (!isGitRepository(workDir)) {
+                std::wcout << L"Выбранная директория не является Git репозиторием!\n";
+                return;
             }
         }
         
@@ -2042,7 +2055,15 @@ public:
             currentBranch = executeCommandInDirectory("git branch --show-current", workDir);
         }
         
-        currentBranch.erase(currentBranch.find_last_not_of("\r\n") + 1);
+        // Удаляем символы новой строки из конца строки
+        if (!currentBranch.empty()) {
+            size_t pos = currentBranch.find_last_not_of("\r\n");
+            if (pos != std::string::npos) {
+                currentBranch.erase(pos + 1);
+            } else {
+                currentBranch.clear();
+            }
+        }
         
         if (wstringToString(branchName) == currentBranch) {
             std::wcout << L"Невозможно удалить текущую ветку. Пожалуйста, переключитесь на другую ветку!\n";
