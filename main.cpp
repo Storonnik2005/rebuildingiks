@@ -364,6 +364,10 @@ public:
         std::wcin >> addFiles;
         std::wcin.ignore();
         
+        std::vector<std::filesystem::path> selectedFiles;
+        std::string sourceDirStr = "";
+        bool keepStructure = false;
+        
         if (addFiles == L'д' || addFiles == L'Д') {
             // Запрашиваем исходную директорию с файлами
             std::wcout << L"Введите путь к директории с исходными файлами (или 'home' для отмены): ";
@@ -373,7 +377,7 @@ public:
             if (checkForHomeCommand(sourceDirPath)) {
                 // Продолжаем без добавления файлов
             } else {
-                std::string sourceDirStr = wstringToString(sourceDirPath);
+                sourceDirStr = wstringToString(sourceDirPath);
                 
                 if (!std::filesystem::exists(sourceDirStr)) {
                     std::wcout << L"Указанная директория не существует! Продолжаем без добавления файлов.\n";
@@ -401,8 +405,6 @@ public:
                         std::getline(std::wcin, selection);
                         
                         if (!checkForHomeCommand(selection)) {
-                            std::vector<std::filesystem::path> selectedFiles;
-                            
                             if (selection == L"all" || selection == L"ALL" || selection == L"все" || selection == L"ВСЕ") {
                                 selectedFiles = allFiles;
                             } else {
@@ -430,42 +432,7 @@ public:
                                 std::wcin >> preserveStructure;
                                 std::wcin.ignore();
                                 
-                                bool keepStructure = (preserveStructure == L'д' || preserveStructure == L'Д');
-                                
-                                // Копирование файлов
-                                int copiedCount = 0;
-                                for (const auto& src : selectedFiles) {
-                                    std::filesystem::path relativePath;
-                                    
-                                    if (keepStructure) {
-                                        // Получаем относительный путь от исходной директории
-                                        relativePath = std::filesystem::relative(src, sourceDirStr);
-                                    } else {
-                                        // Используем только имя файла
-                                        relativePath = src.filename();
-                                    }
-                                    
-                                    // Формируем полный целевой путь
-                                    std::filesystem::path destPath = localPathStr + "/" + relativePath.string();
-                                    
-                                    // Создаем промежуточные директории, если нужно
-                                    std::filesystem::path destDir = destPath.parent_path();
-                                    if (!destDir.empty() && !std::filesystem::exists(destDir)) {
-                                        std::filesystem::create_directories(destDir);
-                                    }
-                                    
-                                    try {
-                                        std::filesystem::copy_file(src, destPath, 
-                                                                  std::filesystem::copy_options::overwrite_existing);
-                                        std::wcout << L"Файл скопирован: " << src.wstring() << L" -> " << destPath.wstring() << L"\n";
-                                        copiedCount++;
-                                    } catch (const std::exception& e) {
-                                        std::wcout << L"Ошибка при копировании файла " << src.wstring() << L": " 
-                                                  << stringToWstring(e.what()) << L"\n";
-                                    }
-                                }
-                                
-                                std::wcout << L"Скопировано " << copiedCount << L" из " << selectedFiles.size() << L" файлов.\n";
+                                keepStructure = (preserveStructure == L'д' || preserveStructure == L'Д');
                             }
                         }
                     }
@@ -503,6 +470,43 @@ public:
             
             readmeFile.close();
             std::wcout << L"Создан файл README.md\n";
+        }
+        
+        // Копируем выбранные файлы, если они есть
+        if (!selectedFiles.empty() && !sourceDirStr.empty()) {
+            int copiedCount = 0;
+            for (const auto& src : selectedFiles) {
+                std::filesystem::path relativePath;
+                
+                if (keepStructure) {
+                    // Получаем относительный путь от исходной директории
+                    relativePath = std::filesystem::relative(src, sourceDirStr);
+                } else {
+                    // Используем только имя файла
+                    relativePath = src.filename();
+                }
+                
+                // Формируем полный целевой путь
+                std::filesystem::path destPath = localPathStr + "/" + relativePath.string();
+                
+                // Создаем промежуточные директории, если нужно
+                std::filesystem::path destDir = destPath.parent_path();
+                if (!destDir.empty() && !std::filesystem::exists(destDir)) {
+                    std::filesystem::create_directories(destDir);
+                }
+                
+                try {
+                    std::filesystem::copy_file(src, destPath, 
+                                              std::filesystem::copy_options::overwrite_existing);
+                    std::wcout << L"Файл скопирован: " << src.wstring() << L" -> " << destPath.wstring() << L"\n";
+                    copiedCount++;
+                } catch (const std::exception& e) {
+                    std::wcout << L"Ошибка при копировании файла " << src.wstring() << L": " 
+                              << stringToWstring(e.what()) << L"\n";
+                }
+            }
+            
+            std::wcout << L"Скопировано " << copiedCount << L" из " << selectedFiles.size() << L" файлов.\n";
         }
         
         // Добавляем файлы в Git и создаем коммит
@@ -1146,6 +1150,81 @@ public:
             }
         }
         
+        // Проверяем, настроен ли удаленный репозиторий
+        std::string remoteCmd = "git remote -v";
+        std::string remoteResult;
+        
+        if (workDir.empty()) {
+            remoteResult = executeCommand(remoteCmd);
+        } else {
+            remoteResult = executeCommandInDirectory(remoteCmd, workDir);
+        }
+        
+        if (remoteResult.empty() || remoteResult.find("origin") == std::string::npos) {
+            // Удаленный репозиторий не настроен
+            std::wcout << L"Удаленный репозиторий не настроен. Хотите создать репозиторий на GitHub? (д/н): ";
+            wchar_t createRepoChoice;
+            std::wcin >> createRepoChoice;
+            std::wcin.ignore();
+            
+            if (createRepoChoice == L'д' || createRepoChoice == L'Д') {
+                // Запрашиваем имя репозитория
+                std::wcout << L"Введите имя для нового репозитория на GitHub (или 'home' для отмены): ";
+                std::wstring repoName;
+                std::getline(std::wcin, repoName);
+                
+                if (checkForHomeCommand(repoName)) {
+                    return;
+                }
+                
+                if (repoName.empty()) {
+                    // Используем имя текущей директории
+                    std::filesystem::path repoPath = workDir.empty() ? 
+                                                   std::filesystem::current_path() : 
+                                                   std::filesystem::path(workDir);
+                    repoName = stringToWstring(repoPath.filename().string());
+                }
+                
+                // Создаем репозиторий на GitHub
+                std::wcout << L"Создание репозитория '" << repoName << L"' на GitHub...\n";
+                
+                // Запрашиваем тип репозитория
+                std::wcout << L"Сделать репозиторий приватным? (д/н): ";
+                wchar_t privateChoice;
+                std::wcin >> privateChoice;
+                std::wcin.ignore();
+                
+                bool isPrivate = (privateChoice == L'д' || privateChoice == L'Д');
+                
+                // Формируем команду для создания репозитория
+                std::string createRepoCmd = "gh repo create " + wstringToString(repoName) + 
+                                          " --" + (isPrivate ? "private" : "public");
+                
+                std::string result;
+                result = executeCommand(createRepoCmd);
+                std::wcout << stringToWstring(result) << L"\n";
+                
+                if (result.find("https://github.com/") != std::string::npos || 
+                    result.find("Created repository") != std::string::npos) {
+                    std::wcout << L"Репозиторий успешно создан на GitHub!\n";
+                    
+                    // Связываем локальный и удаленный репозитории
+                    std::string remoteAddCmd = "git remote add origin https://github.com/" + 
+                                             wstringToString(username) + "/" + wstringToString(repoName) + ".git";
+                    
+                    if (workDir.empty()) {
+                        result = executeCommand(remoteAddCmd);
+                    } else {
+                        result = executeCommandInDirectory(remoteAddCmd, workDir);
+                    }
+                    
+                    std::wcout << L"Локальный репозиторий связан с удаленным!\n";
+                } else {
+                    std::wcout << L"Не удалось создать репозиторий на GitHub. Продолжаем без связывания с удаленным репозиторием.\n";
+                }
+            }
+        }
+        
         std::wstring branchName;
         std::wcout << L"Введите имя новой ветки (или 'home' для возврата в меню): ";
         std::getline(std::wcin, branchName);
@@ -1170,6 +1249,35 @@ public:
         
         if (result.empty()) {
             std::wcout << L"Ветка '" << branchName << L"' успешно создана!\n";
+            
+            // Спрашиваем, хочет ли пользователь отправить ветку на GitHub
+            std::wcout << L"Хотите отправить ветку на GitHub? (д/н): ";
+            wchar_t pushChoice;
+            std::wcin >> pushChoice;
+            std::wcin.ignore();
+            
+            if (pushChoice == L'д' || pushChoice == L'Д') {
+                // Сначала переключаемся на ветку
+                std::string checkoutCmd = "git checkout " + wstringToString(branchName);
+                
+                if (workDir.empty()) {
+                    result = executeCommand(checkoutCmd);
+                } else {
+                    result = executeCommandInDirectory(checkoutCmd, workDir);
+                }
+                
+                // Затем отправляем ветку на GitHub
+                std::string pushCmd = "git push -u origin " + wstringToString(branchName);
+                
+                if (workDir.empty()) {
+                    result = executeCommand(pushCmd);
+                } else {
+                    result = executeCommandInDirectory(pushCmd, workDir);
+                }
+                
+                std::wcout << stringToWstring(result) << L"\n";
+                std::wcout << L"Ветка отправлена на GitHub!\n";
+            }
         } else {
             std::wcout << stringToWstring(result) << L"\n";
         }
@@ -1790,6 +1898,18 @@ public:
             }
         }
         
+        // Проверяем, настроен ли удаленный репозиторий
+        std::string remoteCmd = "git remote -v";
+        std::string remoteResult;
+        
+        if (workDir.empty()) {
+            remoteResult = executeCommand(remoteCmd);
+        } else {
+            remoteResult = executeCommandInDirectory(remoteCmd, workDir);
+        }
+        
+        bool hasRemote = !(remoteResult.empty() || remoteResult.find("origin") == std::string::npos);
+        
         // Показать список веток
         std::string branches;
         if (workDir.empty()) {
@@ -1848,14 +1968,10 @@ public:
             return;
         }
         
-        std::string cmd;
-        if (choice == 1) {
-            cmd = "git branch -d " + wstringToString(branchName);
-        } else {
-            cmd = "git branch -D " + wstringToString(branchName);
-        }
-        
+        std::string deleteFlag = (choice == 2) ? "-D" : "-d";
+        std::string cmd = "git branch " + deleteFlag + " " + wstringToString(branchName);
         std::string result;
+        
         if (workDir.empty()) {
             result = executeCommand(cmd);
         } else {
@@ -1864,10 +1980,25 @@ public:
         
         std::wcout << stringToWstring(result) << L"\n";
         
-        if (result.find("error") != std::string::npos) {
-            std::wcout << L"Ошибка при удалении ветки!\n";
-        } else {
-            std::wcout << L"Ветка '" << branchName << L"' успешно удалена!\n";
+        // Если ветка успешно удалена локально и есть удаленный репозиторий, спрашиваем про удаление на GitHub
+        if (result.find("error") == std::string::npos && result.find("fatal") == std::string::npos && hasRemote) {
+            std::wcout << L"Хотите удалить ветку на GitHub? (д/н): ";
+            wchar_t remoteChoice;
+            std::wcin >> remoteChoice;
+            std::wcin.ignore();
+            
+            if (remoteChoice == L'д' || remoteChoice == L'Д') {
+                std::string pushCmd = "git push origin --delete " + wstringToString(branchName);
+                
+                if (workDir.empty()) {
+                    result = executeCommand(pushCmd);
+                } else {
+                    result = executeCommandInDirectory(pushCmd, workDir);
+                }
+                
+                std::wcout << stringToWstring(result) << L"\n";
+                std::wcout << L"Ветка удалена на GitHub!\n";
+            }
         }
     }
 
